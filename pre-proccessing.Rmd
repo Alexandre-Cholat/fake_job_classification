@@ -5,13 +5,23 @@ date: "2026-03-23"
 output: html_document
 ---
 
-## R Markdown
+# Projet de classification supervisée
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+à rendre avant le 12/04 à 23h5
 
-# Preproccessing script 
+## Analyse préliminaire des données
 
-## Data frame creation
+### Objectifs:
+
+Présentation générale → Le contexte de votre jeu de données → Le lien pour le télécharger (vos analyses doivent être reproductibles) → Votre objectif → Les variables que vous utiliserez (il y aura certainement les identifiants, des caractéristiques non liées au problème, etc.) • Analyse univariée → Analyse statistique descriptive de chacune des variables → Analyse graphique univariée de chacune des variables • Analyse multivariée
+
+```{r}
+library(dplyr)
+library(tidyr)
+
+```
+
+### Data frame creation
 
 ```{r}
 data  = read.csv("C:/Users/alexa/OneDrive/Desktop/MIASHS 2025-2026/balanced_fake_job_postings.csv")
@@ -40,8 +50,31 @@ data$job_id = NULL
 
 
 ```
-## New feature creation
 
-### Quantify salary_range
+### New feature creation
 
+#### Quantify salary_range
 
+```{r}
+# 1. Split the string by the hyphen. 
+# This creates a list where each element is a vector of the split strings.
+split_salaries = strsplit(as.character(data$salary_range), "-")
+
+# 2. Extract the first part (min) and second part (max), then convert to numeric
+# sapply loops through the list and grabs the 1st or 2nd item for each row
+data$min_salary = as.numeric(sapply(split_salaries, function(x) x[1]))
+data$max_salary = as.numeric(sapply(split_salaries, function(x) x[2]))
+
+# align salary scale
+data$min_salary = ifelse(data$min_salary < 1000, data$min_salary * 1000, data$min_salary)
+data$max_salary = ifelse(data$max_salary < 1000, data$max_salary * 1000, data$max_salary)
+
+# 3. Calculate the average salary
+data$avg_salary = (data$min_salary + data$max_salary) / 2
+# Calculate the spread
+data$salary_spread = data$max_salary - data$min_salary# remove 0 sallarys
+# mutliply sallarys like 25 by 1000
+
+# 4. Remove the original string column
+data$salary_range = NULL
+```
