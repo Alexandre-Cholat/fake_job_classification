@@ -53,9 +53,21 @@ data$job_id = NULL
 
 ### New feature creation
 
+#### URL tag is present? - boolean
+```{r}
+help("strsplit")
+help("grepl")
+data$has_external_link = as.numeric(grepl("#URL_", data$company_profile))
+
+
+```
+
+
 #### Quantify salary_range
 
 ```{r}
+
+
 # 1. Split the string by the hyphen. 
 # This creates a list where each element is a vector of the split strings.
 split_salaries = strsplit(as.character(data$salary_range), "-")
@@ -77,4 +89,12 @@ data$salary_spread = data$max_salary - data$min_salary# remove 0 sallarys
 
 # 4. Remove the original string column
 data$salary_range = NULL
+```
+
+
+```{r}
+
+plot(data$required_experience)
+
+
 ```
