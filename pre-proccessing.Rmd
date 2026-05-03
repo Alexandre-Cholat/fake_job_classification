@@ -1,100 +1,668 @@
 ---
 title: "preprocess"
-author: "Adocumentlexandre Cholat"
+author: "Alexandre Cholat, Ramez Dahouathi, Mohammed-Anass Maatallah, Joe Hajj Assaf"
 date: "2026-03-23"
 output: html_document
+header-includes:
+- \usepackage{fancyhdr}
+- \pagestyle{fancy}
+- \fancyhead[RO]{Groupe 2}
 ---
 
-# Projet de classification supervisée
+# Détection d'Offres d'Emploi Frauduleuses par Classification supervisée 
 
-à rendre avant le 12/04 à 23h5
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
 
-## Analyse préliminaire des données
+## Présentation
 
-### Objectifs:
+### Contexte
 
-Présentation générale → Le contexte de votre jeu de données → Le lien pour le télécharger (vos analyses doivent être reproductibles) → Votre objectif → Les variables que vous utiliserez (il y aura certainement les identifiants, des caractéristiques non liées au problème, etc.) • Analyse univariée → Analyse statistique descriptive de chacune des variables → Analyse graphique univariée de chacune des variables • Analyse multivariée
+Un faux poste d'emploi est une annonce publiée en ligne par une entreprise ou un escroc, qui n'a aucune intention réelle de recruter quelqu'un. Certaines entreprises veulent donner l'illusion d'une forte croissance, et d'autres ne sont pas réellement des entreprises, mais des arnaques visant à voler des données personnelles [1].
+
+Ce problème est d'une ampleur conséquente : entre 20 % et 40 % des offres d'emploi actives sont fausses [2].
+
+### Objectif
+
+Ce projet s'inscrit donc dans la problématique actuelle de la détection des fausses annonces d'emploi. L'objectif de ce travail est d'entraîner un modèle de Machine Learning supervisé pour classifier une annonce d'emploi comme étant fausse ou non.
+
+### Lien pour telechargement du jeu de données
+
+Pour entraîner le modèle, un jeu de données est requis. Celui-ci a été choisi, notamment pour sa taille conséquente de 24 400 lignes : [fake_job_post_prediction](https://huggingface.co/datasets/Aurthor/fake_job_post_prediction)
+
+### Les variables pertinentes
+
+Parmi les 18 variables présentes dans ce jeu de données, nous ne nous intéresserons pas à toutes. Un grand défi de cette classification est qu’un certain nombre de variables non structurées, telles que des titres et des chaînes de caractères, devront subir un traitement préliminaire pour en extraire de la valeur pour le Machine Learning. Le jeu contient également de nombreuses variables catégorielles qui pourront être utilisées pour la détection d’annonces frauduleuses. La variable binaire 'fraudulent' sera notre cible de prédiction.
+
+## Nettoyage du jeu de données
+
+```{r, results = "hide", message = FALSE, warning = FALSE}
+#on installe ces libraires pour que le code fonctionne correctement
+library(tidyverse)
+library(readr)
+library(gridExtra) #pour des figures propres dans pdf
+```
 
 ```{r}
-library(dplyr)
+fakeJobs = read_csv("./balanced_fake_job_postings.csv", show_col_types = FALSE)
+head(fakeJobs)
+```
+
+Après une première exploration du jeu de données à l’aide de la fonction head(), nous remarquons que certaines variables semblent contenir un nombre important de valeurs manquantes, notamment salary_range, où de nombreuses observations apparaissent comme nulles. Cette observation reste toutefois préliminaire et nécessite une vérification plus approfondie à l’échelle de l’ensemble du jeu de données. Par ailleurs, plusieurs variables, telles que description, requirements ou benefits, sont constituées de longs blocs de texte. Étant donné que les techniques de traitement du langage naturel (NLP) ne sont pas autorisées dans ce projet, ces variables devront être transformées en représentations plus simples et exploitables par les algorithmes retenus (arbres de décision, Naive Bayes, KNN), par exemple en utilisant des indicateurs dérivés comme la longueur des chaînes de caractères. Dans la suite, nous allons donc quantifier précisément la proportion de valeurs manquantes dans l’ensemble des variables afin d’évaluer leur qualité et leur exploitabilité.
+
+```{r}
+# Calcul du pourcentage de NA par variable
+missing_pct <- colMeans(is.na(fakeJobs) | fakeJobs == "" | fakeJobs == " ") * 100
+print(missing_pct)
+```
+
+C’est maintenant très clair ! Avec ces chiffres, on voit que le jeu de données est un "gruyère" statistique, mais c’est justement ce qui va rendre l'analyse intéressante pour le projet. Une première distinction peut être faite entre les variables selon leur qualité et leur exploitabilité. Certaines variables, comme job_id, doivent être supprimées car elles ne présentent aucun intérêt prédictif malgré l’absence de valeurs manquantes. D’autres, comme salary_range ou department, présentent une proportion très élevée de valeurs nulles et sont difficilement exploitables en l’état. Néanmoins, il n’est pas pertinent de les supprimer immédiatement : une stratégie plus adaptée consiste à créer une modalité « Non renseigné » pour ces variables qualitatives, l’absence d’information pouvant elle-même être un indicateur de fraude. À l’inverse, certaines variables sans valeurs manquantes, telles que telecommuting, has_company_logo, has_questions, ainsi que la variable cible fraudulent, constituent une base solide pour les premiers modèles.
+
+Par ailleurs, l’organisation de l’analyse nécessite de distinguer les variables qualitatives des variables quantitatives. La majorité des variables étant qualitatives, elles devront être converties en facteurs afin d’être utilisées correctement dans les modèles. En revanche, les variables quantitatives sont peu nombreuses. Une solution consiste alors à transformer certaines variables textuelles comme description ou company_profile en variables numériques simples, par exemple en calculant la longueur des chaînes de caractères, une description anormalement courte pouvant constituer un signal pertinent.
+
+```{r, message = FALSE, warning = FALSE}
+# --- 1. Nettoyage initial et suppression du bruit ---
+# Suppression de job_id car c'est un identifiant sans valeur prédictive
+fakeJobs$job_id <- NULL 
+
+# --- 2. Transformation des textes ---
+# On transforme les blocs de texte en leur longueur (nombre de caractères)
+# Une description ou un titre trop court/long peut être un indice de fraude.
+fakeJobs$len_title        <- nchar(as.character(fakeJobs$title))
+fakeJobs$len_description  <- nchar(as.character(fakeJobs$description))
+fakeJobs$len_requirements <- nchar(as.character(fakeJobs$requirements))
+fakeJobs$len_benefits     <- nchar(as.character(fakeJobs$benefits))
+
+# On crée des variables binaires (Oui/Non) pour certains contenus
+fakeJobs$has_benefits <- as.factor(ifelse(fakeJobs$benefits == "" | 
+                                            is.na(fakeJobs$benefits), 0, 1))
+fakeJobs$has_profile  <- as.factor(ifelse(fakeJobs$company_profile == "" | 
+                                            is.na(fakeJobs$company_profile), 0, 1))
+
+# --- 3. Gestion de la localisation (Extraction du pays) ---
+# La localisation est souvent "US, NY, New York". On extrait juste le code pays.
 library(tidyr)
+fakeJobs <- fakeJobs %>%
+  separate(location, into = c("country_code", "state_city"), 
+           sep = ",", extra = "merge", fill = "right")
+fakeJobs$state_city <- NULL # On supprime le détail pour ne garder que le pays
 
+# --- 4. Gestion des données manquantes (Stratégie "Unspecified") ---
+# Pour les variables qualitatives, on remplace les vides par une catégorie explicite.
+# Cela permet d'inclure ces données dans l'analyse plutôt que de les supprimer.
+fix_missing_factors <- function(x) {
+  x <- as.character(x)
+  x[x == "" | is.na(x)] <- "Unspecified"
+  return(as.factor(x))
+}
+
+vars_to_fix <- c("department", "employment_type", "required_experience", 
+                 "required_education", "industry", "function", "country_code")
+
+for(v in vars_to_fix) {
+  fakeJobs[[v]] <- fix_missing_factors(fakeJobs[[v]])
+}
+
+# --- 5. Transformation du Salary Range ---
+# On extrait le salaire moyen et on crée une variable binaire "Salaire spécifié"
+fakeJobs$has_salary <- as.factor(ifelse(fakeJobs$salary_range == "" | 
+                                          is.na(fakeJobs$salary_range), 0, 1))
+
+# Extraction numérique (si spécifié)
+split_salaries <- strsplit(as.character(fakeJobs$salary_range), "-")
+fakeJobs$min_salary <- as.numeric(sapply(split_salaries, function(x) x[1]))
+fakeJobs$max_salary <- as.numeric(sapply(split_salaries, function(x) x[2]))
+fakeJobs$avg_salary <- (fakeJobs$min_salary + fakeJobs$max_salary) / 2
+
+# On remplace les NA des salaires par 0 pour ne pas bloquer les calculs 
+# (justifié par la variable binaire has_salary)
+fakeJobs$avg_salary[is.na(fakeJobs$avg_salary)] <- 0
+fakeJobs$salary_range <- NULL # Suppression de l'original textuel
+
+# --- 6. Finalisation du typage ---
+fakeJobs$fraudulent      <- as.factor(fakeJobs$fraudulent)
+fakeJobs$telecommuting   <- as.factor(fakeJobs$telecommuting)
+fakeJobs$has_company_logo <- as.factor(fakeJobs$has_company_logo)
+fakeJobs$has_questions   <- as.factor(fakeJobs$has_questions)
+
+# Suppression des colonnes textuelles brutes restantes pour libérer la mémoire
+fakeJobs$title <- NULL
+fakeJobs$description <- NULL
+fakeJobs$requirements <- NULL
+fakeJobs$benefits <- NULL
+fakeJobs$company_profile <- NULL
 ```
 
-### Data frame creation
+Quelques anomalies subsistent après ce prétraitement, notamment une forte cardinalité pour certaines variables (department, industry), des salaires aberrants, ainsi que des valeurs manquantes résiduelles. Ces observations ont été faites après inspection du Global Environment dans RStudio. Les variables min_salary et max_salary ne sont utilisées que pour calculer avg_salary et ne sont donc pas conservées. Il n’est pas pertinent d’y remplacer les valeurs manquantes par 0, car cela introduirait des valeurs artificielles sans sens économique. Enfin, certaines valeurs manquantes proviennent de formats non numériques (ex. “20K-50K”), que R ne peut pas convertir directement, ce qui génère des NA.
 
 ```{r}
-data  = read.csv("C:/Users/alexa/OneDrive/Desktop/MIASHS 2025-2026/balanced_fake_job_postings.csv")
+# --- Sélection des variables quantitatives ---
+quant_names <- c("len_title", "len_description", 
+                 "len_requirements", "len_benefits", "avg_salary")
+quantitative_vars <- fakeJobs[, quant_names]
 
-#all rows have fraud label
-ismissingFraud = which(is.na(data$fraudulent))
-length(ismissingFraud)
+# --- Sélection des variables qualitatives ---
+qual_names <- c("country_code", "employment_type", "required_experience", 
+                "required_education", "telecommuting", "has_company_logo", 
+                "has_questions", "has_profile", "has_salary", "has_benefits")
+qualitative_vars <- fakeJobs[, qual_names]
 
-target = data$fraudulent
-target = as.factor(target)
-
-
-#assign proper data types
-is.numeric(data$salary_range)
-
-data$telecommuting = as.factor(data$telecommuting)
-data$has_company_logo = as.factor(data$has_company_logo)
-data$has_questions = as.factor(data$has_questions)
-data$employment_type = as.factor(data$employment_type)
-data$required_experience = as.factor(data$required_experience)
-data$required_education = as.factor(data$required_education)
-data$function. = as.factor(data$function.)
-
-#remove uneccessary collumns
-data$job_id = NULL
-
-
+# --- Définition de la Target ---
+target <- fakeJobs$fraudulent #
 ```
 
-### New feature creation
-
-#### URL tag is present? - boolean
-```{r}
-help("strsplit")
-help("grepl")
-data$has_external_link = as.numeric(grepl("#URL_", data$company_profile))
-
-
-```
-
-
-#### Quantify salary_range
+## Analyse Univariée
 
 ```{r}
+# Analyse statistique des variables quantitatives
+summary(quantitative_vars)
 
+# Analyse statistique des variables qualitatives
+summary(qualitative_vars)
 
-# 1. Split the string by the hyphen. 
-# This creates a list where each element is a vector of the split strings.
-split_salaries = strsplit(as.character(data$salary_range), "-")
-
-# 2. Extract the first part (min) and second part (max), then convert to numeric
-# sapply loops through the list and grabs the 1st or 2nd item for each row
-data$min_salary = as.numeric(sapply(split_salaries, function(x) x[1]))
-data$max_salary = as.numeric(sapply(split_salaries, function(x) x[2]))
-
-# align salary scale
-data$min_salary = ifelse(data$min_salary < 1000, data$min_salary * 1000, data$min_salary)
-data$max_salary = ifelse(data$max_salary < 1000, data$max_salary * 1000, data$max_salary)
-
-# 3. Calculate the average salary
-data$avg_salary = (data$min_salary + data$max_salary) / 2
-# Calculate the spread
-data$salary_spread = data$max_salary - data$min_salary# remove 0 sallarys
-# mutliply sallarys like 25 by 1000
-
-# 4. Remove the original string column
-data$salary_range = NULL
+# Analyse de la Target (très important pour voir l'équilibre du dataset)
+summary(target)
 ```
 
+Le résumé statistique met en évidence d’importants problèmes de qualité des données, notamment la présence de valeurs extrêmes dans avg_salary pouvant atteindre 1 milliard, ce qui nécessite une évaluation critique de la fiabilité des données d’entrée. Les variables quantitatives issues du texte présentent une forte variabilité (avec une longueur moyenne de description de 1 198 caractères), tandis que les données qualitatives sont dominées par les États-Unis (19 502 occurrences) et par une présence importante de valeurs « Unspecified » pour l’éducation (15 725) et l’expérience (12 372). Enfin, la variable target est relativement équilibrée (17 014 contre 11 342), ce qui, contrairement aux distributions réelles souvent très déséquilibrées, constitue un avantage pour l’entraînement des futurs modèles supervisés.
+
+### Analyse des Variables Quantitatives
+
+```{r, fig.height = 10, fig.width=10}
+par(mfrow = c(3,2))
+for(i in 1:ncol(quantitative_vars)){
+  # On force l'extraction en tant que vecteur simple avec [[i]]
+  data_vector = quantitative_vars[[i]] 
+  
+  # On vérifie si c'est bien numérique avant de tracer
+  if(is.numeric(data_vector)){
+    var_name = colnames(quantitative_vars)[i]
+    
+    hist(data_vector, 
+         col = i + 1, 
+         main = paste("Histogramme de", var_name),  
+         xlab = var_name,
+         breaks = 20)
+  } else {
+    # Message d'erreur si une colonne n'est pas au bon format
+    print(paste("La colonne", colnames(quantitative_vars)[i], "n'est pas numérique !"))
+  }
+}
+```
+
+Les histogrammes des variables de longueur (len_title, len_description, len_requirements, len_benefits) présentent tous une forte asymétrie à droite, indiquant que la majorité des offres d'emploi sont concises tandis qu'une minorité de publications est extrêmement détaillée. Concernant avg_salary, le graphique est visuellement inexploitable : il est totalement écrasé par le pic à zéro (correspondant aux données manquantes que nous avons traitées) et par des valeurs aberrantes absurdes atteignant le milliard, ce qui masque toute distribution réelle. Compte tenu de cette distribution chaotique et du manque flagrant de fiabilité des saisies, il est préférable de supprimer la variable avg_salary de l'analyse pour éviter d'introduire un bruit statistique majeur.
+
+### Analyse des Variables Qualitatives
+
+```{r, fig.height = 25, fig.width=20}
+par(mfrow = c(5, 2))
+par(mar = c(4, 3, 1, 0))
+for (i in 1:ncol(qualitative_vars)) {
+  # Extraction du nom de la variable
+  var_name <- colnames(qualitative_vars)[i]
+  
+  # Création de la table de fréquences
+  counts <- table(qualitative_vars[, i])
+  
+  # Tri des barres par fréquence pour une meilleure lisibilité
+  counts_sorted <- sort(counts, decreasing = TRUE)
+  
+  # Affichage du Barplot
+  barplot(counts_sorted, 
+          col = rainbow(length(counts_sorted)), 
+          main = paste("Répartition de", var_name), 
+          xlab = "", 
+          ylab = "Nombre d'offres",
+
+          cex.main = 2) 
+}
+```
+
+L'analyse des variables qualitatives révèle une prédominance massive des États-Unis (US) et un volume critique de données non renseignées (Unspecified) pour l'expérience, l'éducation et le type de poste. Les variables binaires comme has_salary confirment que la majorité des recruteurs masquent la rémunération, tandis que la plupart des entreprises possèdent un profil et un logo. Pour la phase des classifieurs, la variable country_code constitue une anomalie majeure : avec 91 niveaux et un déséquilibre extrême, elle risque de provoquer du surapprentissage (overfitting) ; il serait préférable de la supprimer ou de regrouper les pays minoritaires pour stabiliser l'analyse.
+
+## Analyse Multivariée
 
 ```{r}
+# Suppression des colonnes jugées non pertinentes après analyse univariée
+fakeJobs$avg_salary <- NULL
+fakeJobs$min_salary <- NULL
+fakeJobs$max_salary <- NULL
+fakeJobs$country_code <- NULL
 
-plot(data$required_experience)
+# Mise à jour des groupes de variables pour la suite
+# On retire les colonnes supprimées de la liste
+quant_names <- c("len_title", "len_description", "len_requirements", "len_benefits")
+quantitative_vars <- fakeJobs[, quant_names]
 
+qual_names <- c("employment_type", "required_experience", "required_education", 
+                "telecommuting", "has_company_logo", "has_questions", 
+                "has_profile", "has_salary", "has_benefits")
+qualitative_vars <- fakeJobs[, qual_names]
+```
+
+Avant de regarder la fraude, on vérifie si nos variables de longueur de texte ne sont pas redondantes entre elles.
+
+```{r}
+# Matrice de corrélation
+cor_mat = cor(quantitative_vars, use = "complete.obs")
+print(cor_mat)
+```
+
+La matrice de corrélation montre des coefficients très faibles, tous inférieurs à 0,3. Cela indique une absence de redondance entre les variables de longueur : chaque caractéristique apporte une information indépendante et utile pour les futurs classifieurs. La corrélation la plus "élevée" (0,257) se situe entre la description et les exigences, ce qui reste négligeable et justifie la conservation de l'ensemble de ces variables pour l'analyse multivariée.
+
+### Variables Quantitatives vs Target (Boxplots)
+
+```{r, fig.height=10, fig.width=20}
+par(mfrow = c(2, 2))
+for(i in 1:ncol(quantitative_vars)){
+  var_name = colnames(quantitative_vars)[i]
+  
+  main_i = paste("Boxplot de", var_name, "\nen fonction de la fraude")
+  
+  # Création du boxplot
+  boxplot(quantitative_vars[[i]] ~ target, 
+          col = c("lightblue", "orange"), 
+          main = main_i, 
+          ylab = "Valeur", 
+          xlab = "Fraude (0 = Non, 1 = Oui)",
+          cex.main = 2)
+}
+```
+
+Les boxplots révèlent que les titres des offres frauduleuses (len_title) ont une médiane et une dispersion légèrement plus élevées que les offres réelles. En revanche, pour la longueur des descriptions et des exigences (len_description, len_requirements), les offres authentiques affichent des valeurs extrêmes (outliers) beaucoup plus importantes, suggérant que les fraudeurs évitent les contenus excessivement longs. Les bénéfices ne présentent aucune distinction flagrante, ce qui indique que ces variables de longueur devront être combinées à d'autres caractéristiques pour obtenir un classifieur performant.
+
+### Variables Qualitatives vs Target (Barplots de Proportion)
+
+```{r,results = "hide", message = FALSE, warning = FALSE}
+library(ggplot2)
+library(reshape2)
+```
+
+```{r, fig.height = 20, fig.width=20}
+plot_list <- list()
+for(i in 1:ncol(qualitative_vars)){
+  var_name = colnames(qualitative_vars)[i]
+  
+  # Création de la table croisée
+  counts_table = table(qualitative_vars[[i]], target)
+  df_counts = melt(counts_table)
+  colnames(df_counts) <- c("Variable", "Fraudulent", "Value")
+  
+  # Graphique en proportions (position = "fill")
+  p <- ggplot(df_counts, aes(x = factor(Variable), y = Value, 
+                              fill = factor(Fraudulent))) +
+    geom_bar(stat = "identity", position = "fill", color = "black") +
+    theme_minimal() +
+    labs(x = var_name, y = "Proportion", fill = "Fraude", 
+          title = paste("Lien entre", var_name, "et la fraude")) +
+    theme(plot.title = element_text(size = 20), axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  plot_list[[i]] <- p
+}
+
+grid.arrange(grobs = plot_list, ncol = 2)
+```
+
+L'analyse qualitative identifie des prédicteurs majeurs : l'absence de logo (has_company_logo = 0) ou de profil d'entreprise (has_profile = 0) multiplie drastiquement la probabilité de fraude, atteignant plus de 70 %. Des signaux critiques apparaissent également pour le travail à distance (telecommuting = 1) et certains niveaux d'éducation spécifiques ("Some High School Coursework"), presque exclusivement associés à des arnaques. L'omniprésence des valeurs "Unspecified" s'avère être un indicateur précieux plutôt qu'un obstacle, avec un taux de fraude proche de 50 %, ce qui valide notre décision de conserver ces données manquantes comme une information discriminante en soi.
+
+Au vu de la dominance des variables qualitatives et de l'absence de corrélation forte entre les variables quantitatives, les Arbres de décision et le Naïve Bayes sont les classifieurs les plus pertinents pour ce projet. L'arbre de décision est idéal pour isoler des règles de décision nettes (ex: Logo = 0), tandis que le Naïve Bayes traite efficacement les probabilités liées aux nombreuses catégories "Unspecified". Cependant, nous ferons face à deux limites majeures : le bruit statistique causé par le volume massif de données manquantes et le risque de surapprentissage (overfitting) si le modèle s'appuie trop exclusivement sur un ou deux critères dominants, négligeant ainsi les fraudes plus sophistiquées qui imitent les codes des annonces réelles.
+
+## Les classifieurs
+
+## 1. Classifieur naif bayésien
+
+Dans la partie précedente on a déja transformé les variables et gérer les données manquantes, en plus d'après l'analyse statistique, les deux catégories de la target sont relativement équiprobables, ce qui reprèsente un avantage pour notre classifieur naif bayésien.
+
+### 1.1. Partage du jeu de données en holdout
+
+On partage d'abord le jeu de données en Train/Test, avec 80% des observations placées dans l’ensemble d’apprentissage.
+
+```{r}
+# mais avant on crée un dataframe nommé `predictive_vars` contenant 
+#les variables qualitatives et quantitatives que l'on souhaite utiliser pour prédire la target
+predictive_vars=data.frame(qualitative_vars,quantitative_vars)
+
+#partage de jeu de données
+set.seed(1234)
+n       = nrow(fakeJobs) 
+inTrain = sample(1:n, size = round(0.8 * n), replace = FALSE)
+
+predictive_vars_test    = predictive_vars[-inTrain,]
+target_test             = target[-inTrain]
+predictive_vars_train   = predictive_vars[inTrain,]
+target_train            = target[inTrain]
 
 ```
+
+### 1.2. Phase d'apprentissage
+
+```{r, message = FALSE, warning = FALSE}
+# on télécharge la librairie "naivebayes"
+library(naivebayes)
+
+#on crée notre classifieur à l'aide de la fonction "naive_bayes"
+#en ajoutant  du additive smoothing puisqu'on a des probabilités égales à 0
+
+classif = naive_bayes(x = predictive_vars_train, y =target_train,laplace=1)
+
+```
+
+```{r, fig.height=20, fig.width=20, warning = FALSE, message = FALSE}
+#on obtient une représentation graphique des distributions 
+#conditionnelles des variables explicatives avec
+
+vars_to_plot = names(predictive_vars_train) #pour obtenir les titres
+
+par(mfrow = c(7, 2))
+par(mar = c(4, 4, 2, 1)) 
+
+for (var in vars_to_plot) {
+  plot(classif, which = var, prob = "conditional") #on trace
+  title(main = paste(var), cex.main = 2.5) #on ajoute les titres
+}
+```
+
+On remarque que les variables quantitatives sont modélisées selon une distribution gaussienne, et que les représentations confirment l'analyse multivariée faite précedemment.
+
+### 1.3. Prédiction sur le jeu de données
+
+```{r}
+pred = predict(classif, predictive_vars_test, type = "prob")
+# on peut obtenir directement la catégorie prédite en changeant le type en "class"
+```
+
+### 1.4. Prédiction de la target et calcul des métriques d'évaluation
+
+```{r, message = FALSE, warning = FALSE}
+pred = predict(classif, predictive_vars_test, type = "class")
+
+library(caret)
+accuracy=mean(pred==target_test)
+recall=recall(data=pred,reference=target_test,relevant ="1")
+precision=precision(data=pred,reference=target_test,relevant ="1")
+accuracy
+recall
+precision
+
+confusionMatrix(pred, target_test)$table
+```
+
+L'accuracy est de 0.76, et le recall est 0.8, tandis que la précision est de 0.8. En d'autres termes notre modèle a détecté 80% des vrais cas positifs, et globalement 76% des prédictions sont correctes.
+
+### 1.5. Classifieur naïf bayésien avec 10-fold cross-validation pour évaluer le classifieur
+
+Pour confirmer les performances initiales de détection de la fraude du classifieur Naïf Bayes, nous mettons en place une procédure de validation croisée à 10 plis. Cette méthode permet de tester le classifieur sur l’intégralité du jeu de données en alternant les segments d’apprentissage et de test, offrant ainsi une vision plus robuste des métriques de performance. Pour ce jeu de données, nous n’anticipons aucune différence significative des métriques de performance due à la validation croisée, car le jeu de données est de taille conséquente.
+
+```{r}
+# on assigne chacun des individus du jeu de données à un des 10 folds
+
+n=nrow(predictive_vars)
+nfolds=10
+folds   = NULL
+for(i in 1:n){
+  folds = c(folds, sample(1:nfolds, 1, replace = FALSE))
+}
+# on crée des folds pour diffèrentes métriques d'évaluation
+accuracy_fold   = numeric(nfolds)
+recall_fold     = numeric(nfolds)
+precision_fold  = numeric(nfolds)
+
+# pour faire les itérations de la CV
+set.seed(1234)
+for(k in 1:nfolds){ 
+  inFold                  = which(folds==k)
+  
+  predictive_vars_test    = predictive_vars[inFold,]
+  target_test             = target[inFold]
+  predictive_vars_train   = predictive_vars[-inFold,]
+  target_train            = target[-inFold]
+
+  #pour chaque fold on prédit la target sur le jeu de données de test
+classif     = naive_bayes(x = predictive_vars_train, y =target_train ,laplace = 1)
+  target_pred = predict(classif, predictive_vars_test, type = "class")
+  
+   accuracy_test   = mean(target_pred==target_test)
+  recall_test     = recall(target_pred,target_test, relevant ="1")
+  precision_test  = precision(target_pred,target_test, relevant ="1")
+  # et on assigne à chacun des folds les valeurs des métriques d'évaluation
+  accuracy_fold[k]    = accuracy_test
+  recall_fold[k]      = recall_test
+  precision_fold[k]   = precision_test
+}
+
+names(accuracy_fold)   = paste0("fold_",1:nfolds)
+names(recall_fold)     = paste0("fold_",1:nfolds)
+names(precision_fold)  = paste0("fold_",1:nfolds)
+  
+mean(accuracy_fold)
+mean(recall_fold)
+mean(precision_fold)
+```
+
+Comme anticipé, on remarque que les différentes métriques sont relativement stables autour des valeurs de 0,76 pour l'accuracy, 0,8 pour le recall et 0,8 pour la précision, identiquement à la méthode de holdout.
+
+## 2. Arbre de décision
+
+L’arbre de décision est un algorithme de classification supervisée qui segmente les données en sous-groupes de plus en plus homogènes selon des règles de décision binaires. Nous avons choisi ce modèle car il est particulièrement adapté à notre jeu de données : il gère nativement les variables qualitatives à nombreuses modalités (comme required_education) et offre une simple interprétabilité pour identifier les signaux d'alerte des offres frauduleuses.
+
+### 2.1. Partage du jeu de données
+
+Nous séparons nos données en un ensemble d'entraînement (80%) et un ensemble de test (20%).
+
+```{r}
+# Fusion des variables dans un dataframe de prédiction
+predictive_vars = data.frame(quantitative_vars, qualitative_vars)
+
+set.seed(1234)
+n = nrow(predictive_vars)
+inTrain = sample(1:n, size = round(0.8 * n), replace = FALSE)
+
+# Création des ensembles Train/Test
+predictive_vars_train = predictive_vars[inTrain,]
+target_train = target[inTrain]
+predictive_vars_test = predictive_vars[-inTrain,]
+target_test = target[-inTrain]
+```
+
+### 2.2. Phase d'apprentissage
+
+Nous utilisons le package "rpart" pour construire l'arbre, puis "rpart.plot" pour le dessiner.
+
+```{r, message = FALSE, warning = FALSE}
+library(rpart)
+library(rpart.plot)
+```
+
+```{r}
+# Construction de l'arbre
+# method = "class" car nous sommes sur une classification binaire
+classifTree = rpart(target_train ~ ., data = predictive_vars_train, method = "class")
+
+# Visualisation de l'arbre complet
+#on met faclen qui raccourcit les noms pour éviter un arbre trop grand
+rpart.plot(x = classifTree, type = 3, extra = 2, fallen.leaves = TRUE, faclen = 3,
+           main = "Arbre de décision de la détection de fraude")
+```
+
+L'arbre révèle une logique de fraude très marquée. Le premier critère de division (la racine) repose sur la variable has_profile. L'absence de présentation de l'entreprise est le prédicteur le plus puissant, la majorité des offres sans profil étant classées comme frauduleuses. Ensuite, le modèle affine son diagnostic via le niveau d'éducation et l'expérience requise, et puis davantage avec has_salary, has_company_logo, l'expérience requise, et la longueur du titre.
+
+### 2.3. Prédiction sur le jeu de données et calcul des métriques d'évaluation
+
+On juge l'efficacité :
+
+```{r}
+target_pred = predict(classifTree, predictive_vars_test, type="class")
+head(target_pred)
+
+
+mean(target_pred == target_test)
+# AJOUT : relevant = "1" pour évaluer la détection de fraude ! (et non la capacité du modèle à identifier les annonces légitimes)
+recall(target_pred, target_test, relevant = "1")
+precision(target_pred, target_test, relevant = "1")
+
+confusionMatrix(target_reality_pred, target_reality)$table
+```
+
+Ayant une moyenne et une précision de 84%, et un recall de 90%, ceci est un bon classifieur. Un arbre trop profond risque de capturer le bruit des données (overfitting). Nous cherchons le paramètre de complexité (CP) qui minimise l'erreur de validation croisée.
+
+```{r}
+# Visualisation de l'erreur en fonction du CP
+plotcp(classifTree)
+
+# Recherche du meilleur CP (Règle du 1-SE)
+xerror     = classifTree$cptable[, "xerror"]
+xstd       = classifTree$cptable[, "xstd"]
+min_xerror = which.min(xerror)
+bestcp     = classifTree$cptable[min(which(
+  xerror < xerror[min_xerror] + xstd[min_xerror])), "CP"]
+
+# Élagage de l'arbre
+prunedTree = prune(classifTree, cp = bestcp)
+
+# Visualisation de l'arbre élagué
+rpart.plot(x = prunedTree, type = 3, extra = 2, fallen.leaves = TRUE, faclen = 3,
+           main = "Arbre de décision élagué")
+```
+
+On constate que l'arbre ne change pas, on peut donc dire que toutes les variables présentes sont importantes.
+
+### 2.5. Classifieur Arbre de décision avec 10-fold cross-validation pour évaluer le classifieur
+
+Bien que les performances initiales de l’arbre de décision soient encourageantes, une évaluation sur un simple découpage Holdout (80/20) peut parfois être biaisée par le hasard de la répartition des données. Pour garantir la robustesse de notre modèle et nous assurer que sa capacité de détection de la fraude est stable, nous mettons en place une procédure de validation croisée à 10 plis (10-fold cross-validation). Cette méthode permet de tester l’arbre sur l’intégralité du jeu de données en alternant les segments d’apprentissage et de test, offrant ainsi une vision plus fiable et moins optimiste des métriques de performance.
+
+```{r}
+set.seed(1234)
+nfolds = 10
+
+folds = NULL
+for (i in 1:n){
+  folds = c(folds, sample(1:nfolds, 1, replace = FALSE))
+}
+
+# on utilise de manière répétée les différents folds 
+#du jeu de données pour entraîner et puis tester l'arbre 
+#de décision (sans élagage) en calculant l'accuracy, le recall, et la précision
+
+accuracy_fold   = numeric(nfolds)
+recall_fold     = numeric(nfolds)
+precision_fold  = numeric(nfolds)
+for(k in 1:nfolds){ # pour faire les itérations de la CV
+  inFold                  = which (folds == k)
+  
+  predictive_vars_test    = predictive_vars[inFold,]
+  target_test             = target[inFold]
+  predictive_vars_train   = predictive_vars[-inFold,]
+  target_train            = target[-inFold]
+ 
+  # apprentissage sur le train
+  classifTree = rpart(target_train ~ ., data = predictive_vars_train, 
+                    method = "class")
+  
+  
+  # prédiction sur le test
+  target_pred = predict(classifTree, predictive_vars_test, type = "class")
+
+  
+  accuracy_test   = mean(target_pred == target_test)
+  recall_test     = recall(target_pred, target_test, relevant = "1")
+  precision_test  = precision(target_pred, target_test, relevant = "1")
+  
+  accuracy_fold[k]  = accuracy_test
+  recall_fold[k]    = recall_test
+  precision_fold[k] = precision_test
+}
+names(accuracy_fold) = paste0("fold_",1:nfolds)
+names(recall_fold) = paste0("fold_",1:nfolds)
+names(precision_fold) = paste0("fold_",1:nfolds)
+
+mean(accuracy_fold)
+mean(recall_fold)
+mean(precision_fold)
+```
+
+Les résultats obtenus via la validation croisée confirment la grande stabilité de notre classifieur. Avec une accuracy moyenne de 83%, le modèle maintient une performance cohérente sur l'ensemble des segments de données. Plus important encore dans un contexte de détection de fraude, le recall s'élève à 88%, ce qui signifie que notre arbre parvient à identifier 88% des offres frauduleuses réelles. La précision de 84% vient compléter ce tableau en limitant le nombre d'offres légitimes classées à tort comme frauduleuses. Cette régularité entre les différents folds démontre que l'arbre ne souffre pas de surapprentissage majeur et que les variables sélectionnées sont des indicateurs de fraude universels au sein de ce jeu de données.
+
+## Conclusion
+
+### Comparaision de classifieurs
+
+Pour de futures inférences, l’arbre de décision sera le meilleur choix de classifieur à utiliser. Celui-ci a atteint les meilleures métriques de performance, avec une accuracy moyenne de 83,8 %, une precision de 84,9 %, et un recall de 88,9 %. En comparaison, le classifieur naïf bayésien atteint une accuracy de 76,8 %, une precision de 80,3 % et un recall de 81,4 %. Ont peut attribuer les pires performances du modele naifs a son hypothese d'independence. Dans le contexte de la detection d'annonce fausse, on sait que une annonce sans logo a souvent aussi un profil manquant, par exemple.
+
+En plus de sa meilleure performance objective, l’arbre de décision permet d’identifier des signaux d’alerte clairs pour les annonces, tels que l’absence de profil d’entreprise, le niveau d’éducation requis ou l’absence de logo, comme indications d’un emploi frauduleux.
+
+### Ouvertures
+
+#### Applications
+
+Ce simple projet de Machine Learning peut avoir des applications intéressantes : face au fort volume d’annonces d’emploi publiées, la légèreté des modèles de détection de fraude est importante. Minimiser les calculs, et donc le coût en temps, en énergie et en ressources, devient un facteur important pour la détection de fraude. Ainsi, nous montrons qu’un classifieur simpliste tel qu’un arbre de décision est tout à fait capable de détecter la fraude sans passer par des étapes d’apprentissage profond ou de traitement du langage naturel (NLP), qui sont très coûteuses. Nous remarquons aussi que, grâce à la nature des variables choisies, ce classifieur peut s’appliquer aux annonces d’emploi dans d’autres langues, sans adaptation du système NLP à chaque langue.
+
+En plus de la légèreté des calculs requis par ce classifieur, un avantage principal de l’arbre de décision est son explicabilité. Pour chaque instance de classification, l’arbre permet de savoir exactement pourquoi une annonce a été classée comme frauduleuse ou non. Pour une application réelle, cela permettrait de résoudre facilement d’éventuelles erreurs de classification frauduleuse.
+
+Une limite pour une telle application est le décalage de distribution de la data. Notre jeu de données d'entraînement contient 50 % d'annonces frauduleuses alors que la réalité se situe entre 20 % et 40 % des annonces. Cela peut entraîner une tendance à prédire la fraude trop souvent, augmentant ainsi le nombre de faux positifs, entrainant une baisse de la precision. Testons cela en des equilibrant le jeu de test pour simuler un prediction reele:
+
+```{r}
+# Création du jeu de test "Reality"
+
+# 1. Identifier les indices des annonces légitimes (0) et frauduleuses (1) 
+# directement dans le jeu de test existant
+idx_legit <- which(target_test == 0)
+idx_fraud <- which(target_test == 1)
+
+n_legit <- length(idx_legit)
+n_fraud_initial <- length(idx_fraud)
+
+# 2. Calculer le nombre exact de fraudes à conserver pour atteindre 30% du total
+# Équation: Fraudes / (Fraudes + Légitimes) = 0.30  => Fraudes = (0.3 / 0.7) * Légitimes
+n_fraud_target <- round((3 / 7) * n_legit)
+
+# Vérification optionnelle pour s'assurer qu'on ne demande pas plus de fraudes qu'on en a
+if(n_fraud_target > n_fraud_initial) {
+  stop("Pas assez de données frauduleuses dans le test set pour atteindre ce ratio.")
+}
+
+# 3. Sélectionner aléatoirement les fraudes à CONSERVER
+set.seed(999) # Pour garantir le même résultat à chaque exécution
+sample_fraud <- sample(idx_fraud, size = n_fraud_target, replace = FALSE)
+
+# 4. Combiner tous les légitimes avec l'échantillon réduit de fraudes
+idx_reality <- c(idx_legit, sample_fraud)
+
+# 5. Appliquer ce filtre à predictive_vars_test et target_test
+predictive_vars_reality <- predictive_vars_test[idx_reality, ]
+target_reality <- target_test[idx_reality]
+
+plot(target_test, main = " Distribution de fraude du jeu 'Fake Jobs'")
+plot(target_reality, main = " Distribution de fraude du jeu de 'Reality'")
+
+```
+
+```{r}
+# Test du modèle sur le nouveau jeu "Reality"
+
+library(caret)
+
+# Inférence sur realite simulee
+target_reality_pred <- predict(classifTree, predictive_vars_reality, type = "class")
+head(target_reality_pred)
+
+mean(target_reality_pred == target_reality)
+recall(target_reality_pred, target_reality, relevant = "1")
+precision(target_reality_pred, target_reality, relevant = "1")
+
+confusionMatrix(target_reality_pred, target_reality)$table
+```
+
+#### Pistes a explorer
+
+Suite à l’introduction que nous avons vue lors du dernier cours, la modélisation par régression logistique semblerait être un classifieur pertinent pour la détection d’annonces d’emploi frauduleuses. La régression logistique aurait permis de modéliser la probabilité de fraude sous la forme d’une combinaison linéaire continue des variables via la fonction sigmoïde. Cela aurait permis d’estimer les intervalles de confiance et d’évaluer les p-values des coefficients de régression, permettant ainsi de prouver et de quantifier la significativité des variables spécifiques pour cette tâche de détection de fraude.
+
+Il serait également intéressant d’appliquer des modèles de NLP pour exploiter les textes non structurés présents dans les annonces, tels que les descriptions de postes et les titres d’annonces, de manière plus approfondie. Nous pourrions par exemple ajouter des variables qualitatives comme « intonation_urgente » ou « vocabulaire_frauduleux », puis comparer la qualité d’inférence entre les classifieurs entraînés sur des données plus ou moins enrichies.
+
+## Bibliographie
+
+1.  **FBI Public Service Announcement (2021).** *Cyber Criminals Are Using Fake Job Listings to Target Applicants’ Personally Identifiable Information*
+
+2.  **ResumeBuilder (2024).** *Survey: 3 in 10 companies have active "Ghost Job" postings.*
+
+3.  **James, G., Witten, D., Hastie, T., & Tibshirani, R. (2013).** *An Introduction to Statistical Learning: with Applications in R.* Springer.
